@@ -1,2 +1,4 @@
-*.meta
 *.DS_Store
+LICENSE.md.meta
+package.json.meta
+CHANGELOG.md.meta
