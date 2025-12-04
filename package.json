@@ -1,0 +1,27 @@
+{
+  "name": "com.codedimmersions.eostransport",
+  "version": "3.0.0b1",
+  "displayName": "EOS Transport",
+  "description": "A transport for Mirror Networking using Epic Online Services to provide free P2P services.",
+  "unity": "2022.3",
+  "unityRelease": "0",
+  "documentationUrl": "https://github.com/CodedImmersions/EOSTransport/wiki",
+  "license": "MIT",
+  "licensesUrl": "LICENSE.md",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+ },
+ "type": "library",
+ "keywords": [
+    "Epic",
+    "EOS",
+    "Transport",
+    "Mirror",
+    "Network"
+  ],
+  "author": {
+    "name": "Coded Immersions",
+    "email": "contact@codedimmersions.com",
+    "url": "https://codedimmersions.com"
+  }
+}
