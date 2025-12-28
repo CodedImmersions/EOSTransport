@@ -10,7 +10,7 @@ using Unity.Profiling;
 
 namespace EpicTransport
 {
-    public abstract class Common
+    public abstract class Common : IDisposable
     {
         protected ProductUserId MyPUID;
 
@@ -24,6 +24,8 @@ namespace EpicTransport
 
         public bool Initializing { get; protected set; }
         public bool Active { get; protected set; }
+
+        public bool ShuttingDown { get; protected set; }
 
         //used to save memory
         private SendPacketOptions sendopt = new SendPacketOptions() { AllowDelayedDelivery = true, DisableAutoAcceptConnection = false };
@@ -76,7 +78,7 @@ namespace EpicTransport
             pkcache = new PacketKey();
         }
 
-        internal void Dispose()
+        public void Dispose()
         {
             p2p.RemoveNotifyPeerConnectionRequest(connreqid);
             p2p.RemoveNotifyPeerConnectionEstablished(connestid);
@@ -85,6 +87,13 @@ namespace EpicTransport
 
         private void OnRemoteConnectionClosed(ref OnRemoteConnectionClosedInfo cb)
         {
+            if (cb.SocketId.Value.SocketName == HostMigrationController.instance.socket.SocketName)
+            {
+                Debug.Log("ignoring disconnect from HM socket.");
+                deadsockets.Add(cb.SocketId.Value);
+                return;
+            }
+
             OnConnectionClosed(cb.RemoteUserId);
 
             switch (cb.Reason)

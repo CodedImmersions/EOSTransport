@@ -38,6 +38,7 @@ namespace EpicTransport
         public const string EpicScheme = "epic";
         public const string DefaultAttributeKey = "default";
         public const string HostAddressKey = "host_address";
+        public const string DisplayNameKey = "display_name";
 
         internal const byte InternalChannel = byte.MaxValue;
         internal const byte HostMigrationChannel = 254;
@@ -47,8 +48,8 @@ namespace EpicTransport
 
         public static bool ConnectedToLobby => instance.connectedToLobby;
 
-        private bool connectedToLobby;
-        private LobbyInfo connectedLobbyInfo = null;
+        internal bool connectedToLobby;
+        internal LobbyInfo connectedLobbyInfo = null;
         public static LobbyInfo ConnectedLobbyInfo => instance.connectedLobbyInfo;
 
         internal Common activeconnection;
@@ -190,7 +191,7 @@ namespace EpicTransport
 
             EOSManager.Tick();
 
-            if (client != null && !client.Active && !client.Initializing)
+            if (client != null && !client.Active && !client.Initializing && !client.ShuttingDown)
             {
                 TransportLogger.Log("client.Connect called");
                 client.Connect(client.HostProductId.ToString());
@@ -299,7 +300,7 @@ namespace EpicTransport
                 if (cb.ResultCode != Result.Success) throw new EOSSDKException(cb.ResultCode, "Failed to create lobby!");
 
                 if (attributes == null) attributes = new List<AttributeData>();
-                attributes.Insert(0, new AttributeData() { Key = DefaultAttributeKey, Value = DefaultAttributeKey }); //why do we need this? note to self, look into why it's needed.
+                attributes.Insert(0, new AttributeData() { Key = DefaultAttributeKey, Value = DefaultAttributeKey }); //useful for searching for lobbies in the EOS dashboard.
                 attributes.Insert(1, new AttributeData() { Key = HostAddressKey, Value = EOSManager.LocalUserProductIDString });
 
                 UpdateLobbyModificationOptions updateopt = new UpdateLobbyModificationOptions() { LocalUserId = EOSManager.LocalUserProductID, LobbyId = cb.LobbyId };
@@ -332,6 +333,8 @@ namespace EpicTransport
                     };
 
                     instance.connectedToLobby = true;
+
+                    UpdateMemberAttribute(new AttributeData() { Key = DisplayNameKey, Value = EOSManager.DisplayName });
 
                     OnJoinedLobby?.Invoke(lobbyId);
                 });
@@ -370,6 +373,8 @@ namespace EpicTransport
                 };
 
                 instance.connectedToLobby = true;
+
+                UpdateMemberAttribute(new AttributeData() { Key = DisplayNameKey, Value = EOSManager.DisplayName });
 
                 OnJoinedLobby?.Invoke(info.Value.LobbyId);
             });
@@ -410,6 +415,9 @@ namespace EpicTransport
                 };
 
                 instance.connectedToLobby = true;
+
+                UpdateMemberAttribute(new AttributeData() { Key = DisplayNameKey, Value = EOSManager.DisplayName });
+
                 OnJoinedLobby?.Invoke(id);
             });
             
@@ -545,22 +553,19 @@ namespace EpicTransport
         /// <summary>
         /// Leaves/Destroys the currently connected lobby and stops the Mirror client/server.
         /// </summary>
-        public static void LeaveLobby() //TODO: move host promotion picking the the controller
+        public static void LeaveLobby()
         {
             if (!ConnectedToLobby) return;
 
             string id = ConnectedLobbyInfo.LobbyId;
             bool host = ConnectedLobbyInfo.IsLobbyOwner && NetworkServer.active;
-            bool migration = HostMigrationEnabled;
 
-            if (host && !migration) { DestroyTheLobby(id); return; }
+            if (host && !HostMigrationEnabled) { DestroyTheLobby(id); return; }
 
-            if (host && migration)
+            if (host && HostMigrationEnabled)
             {
-                ProductUserId nextHost = default;
-
-                LobbyDetailsGetMemberCountOptions countopt = new LobbyDetailsGetMemberCountOptions();
-                uint count = ConnectedLobbyInfo.CurrentLobbyDetails.GetMemberCount(ref countopt);
+                int count = NetworkManager.singleton.numPlayers;
+                Debug.Log($"Lobby Count: {count}");
 
                 if (count <= 1)
                 {
@@ -569,39 +574,14 @@ namespace EpicTransport
                     return;
                 }
 
-                for (uint i = 0; i < count; i++)
-                {
-                    LobbyDetailsGetMemberByIndexOptions getopt = new LobbyDetailsGetMemberByIndexOptions() { MemberIndex = i };
-                    ProductUserId member = ConnectedLobbyInfo.CurrentLobbyDetails.GetMemberByIndex(ref getopt);
-
-                    if (member != EOSManager.LocalUserProductID) { nextHost = member; break; }
-                }
-
-                if (nextHost == default)
-                {
-                    TransportLogger.LogWarning("No valid member found to promote. Destroying lobby.");
-                    DestroyTheLobby(id);
-                    return;
-                }
-
-                if (PromoteMember(nextHost))
-                {
-                    TransportLogger.Log($"Host successfully promoted to {nextHost}. Leaving lobby...");
-                    LeaveTheLobby(id);
-                }
-                else
-                {
-                    TransportLogger.LogError($"Failed to promote new host. Destroying lobby as fallback.");
-                    DestroyTheLobby(id);
-                }
-
+                HostMigrationController.instance.HostMigrate(id);
                 return;
             }
 
             LeaveTheLobby(id);
         }
 
-        private static void LeaveTheLobby(string lobbyId)
+        internal static void LeaveTheLobby(string lobbyId)
         {
             LeaveLobbyOptions leaveopt = new LeaveLobbyOptions()
             {
@@ -623,7 +603,7 @@ namespace EpicTransport
             });
         }
 
-        private static void DestroyTheLobby(string lobbyId)
+        internal static void DestroyTheLobby(string lobbyId)
         {
             DestroyLobbyOptions destroyopt = new DestroyLobbyOptions()
             {
@@ -685,34 +665,40 @@ namespace EpicTransport
         /// Promotes the provided lobby member to become the new lobby owner.
         /// </summary>
         /// <param name="newOwner">The <see cref="ProductUserId"/> of the new lobby owner.</param>
-        public static bool PromoteMember(ProductUserId newOwner)
+        public static void PromoteMember(ProductUserId newOwner, Action<bool> success)
         {
-            if (!ConnectedToLobby) return false;
+            if (!ConnectedToLobby) success.Invoke(false);
             if (ConnectedLobbyInfo.IsLobbyOwner && NetworkServer.active)
             {
                 PromoteMemberOptions promoteopt = new PromoteMemberOptions() { LocalUserId = EOSManager.LocalUserProductID, TargetUserId = newOwner, LobbyId = ConnectedLobbyInfo.LobbyId };
 
                 EOSManager.GetLobbyInterface().PromoteMember(ref promoteopt, null, (ref PromoteMemberCallbackInfo cb) =>
                 {
-                    if (cb.ResultCode != Result.Success && cb.ResultCode != Result.AlreadyPending) throw new EOSSDKException(cb.ResultCode, "Failed to promote lobby member!");
-                });
-            }
+                    if (cb.ResultCode != Result.Success && cb.ResultCode != Result.AlreadyPending)
+                    {
+                        success.Invoke(false);
+                        throw new EOSSDKException(cb.ResultCode, "Failed to promote lobby member!");
+                    }
 
-            return true;
+                    success.Invoke(true);
+                });
+
+            }
         }
 
         /// <summary>
         /// Add/Update an attribute to the current lobby.
         /// </summary>
-        /// <param name="attribute"></param>
-        public static void UpdateAttribute(AttributeData attribute)
+        /// <remarks>You must be the lobby owner to add/update lobby attributes.</remarks>
+        /// <param name="attribute">The <see cref="AttributeData"/> containing the attrribute to add/update.</param>
+        public static void UpdateAttribute(AttributeData attribute, LobbyAttributeVisibility visibility = LobbyAttributeVisibility.Public)
         {
             if (!ConnectedToLobby || !ConnectedLobbyInfo.IsLobbyOwner) return;
 
             UpdateLobbyModificationOptions modopt = new UpdateLobbyModificationOptions() { LocalUserId = EOSManager.LocalUserProductID, LobbyId = ConnectedLobbyInfo.LobbyId };
             EOSManager.GetLobbyInterface().UpdateLobbyModification(ref modopt, out LobbyModification mod);
 
-            LobbyModificationAddAttributeOptions addopt = new LobbyModificationAddAttributeOptions() { Attribute = attribute, Visibility = LobbyAttributeVisibility.Public };
+            LobbyModificationAddAttributeOptions addopt = new LobbyModificationAddAttributeOptions() { Attribute = attribute, Visibility = visibility };
             Result res = mod.AddAttribute(ref addopt);
             if (res != Result.Success) throw new EOSSDKException(res, "Failed to add lobby attribute!");
 
@@ -720,7 +706,30 @@ namespace EpicTransport
             EOSManager.GetLobbyInterface().UpdateLobby(ref updateopt, null, (ref UpdateLobbyCallbackInfo cb) =>
             {
                 if (cb.ResultCode != Result.Success) throw new EOSSDKException(cb.ResultCode, "Failed to update lobby!");
-                TransportLogger.Log($"updated attribute. key: {attribute.Key}. value: {attribute.Value}.");
+                TransportLogger.Log($"updated attribute. key: {attribute.Key}. value: {attribute.Value.AsUtf8}.");
+            });
+        }
+
+        /// <summary>
+        /// Add/Update an attribute to the current local player in the lobby.
+        /// </summary>
+        /// <param name="attribute">The <see cref="AttributeData"/> containing the attrribute to add/update.</param>
+        public static void UpdateMemberAttribute(AttributeData attribute, LobbyAttributeVisibility visibility = LobbyAttributeVisibility.Public)
+        {
+            if (!ConnectedToLobby) return;
+
+            UpdateLobbyModificationOptions modopt = new UpdateLobbyModificationOptions() { LocalUserId = EOSManager.LocalUserProductID, LobbyId = ConnectedLobbyInfo.LobbyId };
+            EOSManager.GetLobbyInterface().UpdateLobbyModification(ref modopt, out LobbyModification mod);
+
+            LobbyModificationAddMemberAttributeOptions addopt = new LobbyModificationAddMemberAttributeOptions() { Attribute = attribute, Visibility = visibility };
+            Result res = mod.AddMemberAttribute(ref addopt);
+            if (res != Result.Success) throw new EOSSDKException(res, "Failed to add lobby member attribute!");
+
+            UpdateLobbyOptions updateopt = new UpdateLobbyOptions() { LobbyModificationHandle = mod };
+            EOSManager.GetLobbyInterface().UpdateLobby(ref updateopt, null, (ref UpdateLobbyCallbackInfo cb) =>
+            {
+                if (cb.ResultCode != Result.Success) throw new EOSSDKException(cb.ResultCode, "Failed to update lobby!");
+                TransportLogger.Log($"updated local member attribute. key: {attribute.Key}. value: {attribute.Value.AsUtf8}.");
             });
         }
         #endregion

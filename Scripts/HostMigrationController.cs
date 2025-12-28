@@ -6,12 +6,12 @@ using EpicTransport.Attributes;
 using Mirror;
 
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
@@ -23,7 +23,16 @@ namespace EpicTransport
     [RequireComponent(typeof(HMSkip))]
     public class HostMigrationController : MonoBehaviour
     {
+        public static HostMigrationController instance {  get; private set; }
+
         [SerializeField] private float backupRefreshInterval = 0.2f;
+
+#if MIRROR_VR
+        [HideInInspector] public HostMigrationPlayerSelection playerSelectionMethod;
+#else
+        public HostMigrationPlayerSelection playerSelectionMethod;
+#endif
+
         private BackupData LocalBackup = new BackupData();
 
         private bool hostmigrating;
@@ -37,13 +46,15 @@ namespace EpicTransport
         private byte[] ivbackup;
 
         private List<ProductUserId> peers;
-        private SocketId socket;
+        internal SocketId socket;
 
         private ulong updateid;
         internal static HostMigrationMessage message { get; private set; }
 
         private void Awake()
         {
+            instance = this;
+
             socket = new SocketId() { SocketName = Helper.GenerateHexString(16) };
             EOSTransport.OnJoinedLobby += OnStartClient;
             EOSTransport.OnLeftLobby += OnStopClient;
@@ -91,6 +102,60 @@ namespace EpicTransport
         private void OnApplicationQuit()
         {
             EOSTransport.LeaveLobby();
+        }
+
+        internal void HostMigrate(string lobbyid)
+        {
+            ProductUserId newhost = default;
+            bool selected = false;
+
+            switch (playerSelectionMethod)
+            {
+                case HostMigrationPlayerSelection.PlayerOrder:
+                    KeyValuePair<int, NetworkConnectionToClient> next = NetworkServer.connections.OrderBy(c => c.Key).Skip(1).FirstOrDefault();
+
+                    Debug.Assert(next.Value != null);
+
+                    newhost = ProductUserId.FromString(next.Value.address);
+                    selected = true;
+                    break;
+
+                case HostMigrationPlayerSelection.RoundTripTime:
+                    NetworkConnectionToClient newconn = NetworkServer.connections.Values.Where(c => c.identity != null).OrderBy(c => c.rtt).FirstOrDefault();
+
+                    Debug.Assert(newconn != null);
+
+                    newhost = ProductUserId.FromString(newconn.address);
+                    selected = true;
+                    break;
+
+                default:
+                    KeyValuePair<int, NetworkConnectionToClient> next2 = NetworkServer.connections.OrderBy(c => c.Key).Skip(1).FirstOrDefault();
+
+                    Debug.Assert(next2.Value != null);
+
+                    newhost = ProductUserId.FromString(next2.Value.address);
+                    selected = true;
+                    break;
+            }
+
+            Debug.Log("waiting for new host to be picked");
+            while (!selected);
+            Debug.Log($"new host picked. it's {newhost.ToString()}.");
+
+            EOSTransport.PromoteMember(newhost, success =>
+            {
+                if (success)
+                {
+                    TransportLogger.Log($"New host {newhost.ToString()} successfully promoted. Leaving lobby.");
+                    EOSTransport.LeaveTheLobby(lobbyid);
+                }
+                else
+                {
+                    TransportLogger.LogWarning($"Promotion of new host {newhost.ToString()} failed. Closing lobby as a safeguard.");
+                    EOSTransport.DestroyTheLobby(lobbyid);
+                }
+            });
         }
 
         private void Backup()
@@ -390,7 +455,7 @@ namespace EpicTransport
 
         private void OnLobbyMemberUpdated(ref LobbyMemberStatusReceivedCallbackInfo cb)
         {
-            TransportLogger.LogError($"Member Updated. User: {cb.TargetUserId.ToString()}, Action: {cb.CurrentStatus}.");
+            TransportLogger.Log($"Member Updated. User: {cb.TargetUserId.ToString()}, Action: {cb.CurrentStatus}.");
 
             switch (cb.CurrentStatus)
             {
@@ -464,7 +529,7 @@ namespace EpicTransport
             EOSManager.GetLobbyInterface().UpdateLobby(ref updateopt, null, (ref UpdateLobbyCallbackInfo cb) =>
             {
                 if (cb.ResultCode != Result.Success) throw new EOSSDKException(cb.ResultCode, "Failed to update lobby!");
-                TransportLogger.Log($"updated attribute. key: {attribute.Key}. value: {attribute.Value}.");
+                TransportLogger.Log($"updated attribute. key: {attribute.Key}. value: {attribute.Value.AsUtf8 ?? "null"}.");
             });
             #endregion
 
@@ -623,6 +688,16 @@ namespace EpicTransport
         }
 
         #endregion
+
+#if UNITY_EDITOR
+        private void OnValidate()
+        {
+            if (gameObject.TryGetComponent(out NetworkIdentity ni))
+            {
+                UnityEditor.EditorApplication.delayCall += () => { UnityEditor.Undo.DestroyObjectImmediate(ni); };
+            }
+        }
+#endif
     }
 
     [Serializable]
@@ -692,4 +767,6 @@ namespace EpicTransport
     {
         public string nexthost;
     }
+
+    public enum HostMigrationPlayerSelection { PlayerOrder, RoundTripTime }
 }

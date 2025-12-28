@@ -83,18 +83,20 @@ namespace EpicTransport
 
         internal void Disconnect(int connid)
         {
+            if (userids == null || !userids.TryGetValue(connid, out ProductUserId p) || !sockets.TryGetValue(connid, out SocketId s)) return;
+
             SendInternalData(userids[connid], sockets[connid], InternalMessages.DISCONNECT, new byte[] { EOSTransport.DRHeader, (byte)DisconnectReason.KICKED });
 
             CloseConnectionOptions closeopt = new CloseConnectionOptions()
             {
                 LocalUserId = MyPUID,
-                RemoteUserId = userids[connid],
-                SocketId = sockets[connid]
+                RemoteUserId = p,
+                SocketId = s
             };
 
             p2p.CloseConnection(ref closeopt);
 
-            deadsockets.Add(sockets[connid]);
+            deadsockets.Add(s);
 
             clients.RemoveAll(p => p.ConnectionID == connid);
             userids.Remove(connid);
@@ -105,6 +107,8 @@ namespace EpicTransport
 
         internal void Shutdown()
         {
+            ShuttingDown = true;
+
             foreach (PeerConnection conn in clients)
             {
                 SendInternalData(conn.ProductUserID, conn.SocketID.Value, InternalMessages.DISCONNECT, new byte[] { EOSTransport.DRHeader, (byte)DisconnectReason.SERVER_CLOSE });
@@ -169,9 +173,8 @@ namespace EpicTransport
 
         protected override void OnConnectionClosed(ProductUserId remote)
         {
+            if (!userids.TryGetValue(remote, out int conn)) return;
             TransportLogger.Log($"P2P Connection with {remote} closed.");
-
-            int conn = userids[remote];
 
             deadsockets.Add(sockets[conn]);
 
@@ -215,7 +218,6 @@ namespace EpicTransport
                     sockets.Add(connid, socket);
 
                     TransportLogger.Log($"remote client {remote} connected; assigning connection id {connid}.");
-                    TransportLogger.LogError(Newtonsoft.Json.JsonConvert.SerializeObject(clients));
 
 #if MIRROR_90_OR_NEWER
                     OnConnected.Invoke(connid, remote.ToString());
@@ -225,7 +227,8 @@ namespace EpicTransport
                     break;
 
                 case InternalMessages.DISCONNECT:
-                    int conn = userids[remote];
+
+                    if (!userids.TryGetValue(remote, out int conn)) return;
 
                     if (extradata != null)
                     {

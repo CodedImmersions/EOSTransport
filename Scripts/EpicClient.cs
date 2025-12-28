@@ -65,6 +65,9 @@ namespace EpicTransport
                     TransportLogger.LogError($"Connection to {address} timed out after {timeout.TotalMilliseconds} ms.");
                     OnError.Invoke(TransportError.Timeout, $"Connection to {address} timed out after {timeout.TotalMilliseconds} ms.");
                     OnConnectionClosed(HostProductId);
+
+                    EOSTransport.instance.connectedToLobby = false;
+                    EOSTransport.instance.connectedLobbyInfo = null;
                     return;
                 }
             }
@@ -74,8 +77,11 @@ namespace EpicTransport
 
         internal void Disconnect()
         {
+            ShuttingDown = true;
+
             SendInternalData(HostProductId, MySocketId, InternalMessages.DISCONNECT);
             OnDisconnected.Invoke();
+
             DisposeThis();
         }
 
@@ -173,6 +179,8 @@ namespace EpicTransport
                     break;
 
                 case InternalMessages.DISCONNECT:
+                    ShuttingDown = true;
+
                     if (extradata != null)
                     {
                         if (extradata[0] == EOSTransport.DRHeader)
