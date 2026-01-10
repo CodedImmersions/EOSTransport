@@ -5,8 +5,7 @@
     "includePlatforms": [],
     "excludePlatforms": [
         "WebGL",
-        "WindowsStandalone32",
-        "WindowsStandalone32Server"
+        "WindowsStandalone32"
     ],
     "allowUnsafeCode": false,
     "overrideReferences": false,

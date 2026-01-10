@@ -32,11 +32,7 @@ namespace EpicTransport
 
         internal EpicServer(EOSTransport transport, int maxconns) : base(transport)
         {
-#if MIRROR_90_OR_NEWER
-            OnConnected += (connid, clientaddress) => transport.OnServerConnectedWithAddress(connid, clientaddress); //OnServerConnectedWithAddress added in v89.11.0
-#else
-            OnConnected += (connid) => transport.OnServerConnected(connid);
-#endif
+            OnConnected += (connid, clientaddress) => transport.OnServerConnectedWithAddress?.Invoke(connid, clientaddress);
 
             OnDataReceived += (connid, data, channel) => transport.OnServerDataReceived.Invoke(connid, data, channel);
             OnDataSent += (connid, data, channel) => transport.OnServerDataSent?.Invoke(connid, data, channel);
@@ -218,12 +214,7 @@ namespace EpicTransport
                     sockets.Add(connid, socket);
 
                     TransportLogger.Log($"remote client {remote} connected; assigning connection id {connid}.");
-
-#if MIRROR_90_OR_NEWER
                     OnConnected.Invoke(connid, remote.ToString());
-#else
-                    OnConnected.Invoke(connid);
-#endif
                     break;
 
                 case InternalMessages.DISCONNECT:
