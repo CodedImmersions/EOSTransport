@@ -1,0 +1,83 @@
+﻿using UnityEngine;
+using EpicTransport;
+
+using Epic.OnlineServices;
+using Epic.OnlineServices.Auth;
+
+using Oculus.Platform;
+using Oculus.Platform.Models;
+
+/// <summary>
+/// EOSTransport Oculus Login Example. DO NOT DIRECTLY USE!!!! INSTEAD PUT IT INTO YOUR OWN SCRIPT THAT ISN'T OBVIOUSLY NAMED AND DOESN'T HAVE API KEYS EXPOSED!!!!
+/// </summary>
+public class OculusLoginExample : MonoBehaviour
+{
+    [Header("EXAMPLE ONLY\nPLEASE DO NOT DIRECTLY USE")]
+
+    [SerializeField] private string productName;
+    [SerializeField] private string productId;
+
+    [SerializeField] private string clientId;
+    [SerializeField] private string clientSecret;
+
+    [SerializeField] private string sandboxId;
+    [SerializeField] private string deploymentId;
+
+    [SerializeField] private string encryptionKey;
+
+    private void Awake()
+    {
+        //taken from MirrorVR
+        Core.AsyncInitialize().OnComplete(result1 =>
+        {
+            if (!result1.IsError)
+            {
+                Entitlements.IsUserEntitledToApplication().OnComplete(result2 =>
+                {
+                    if (!result2.IsError)
+                    {
+                        Users.GetLoggedInUser().OnComplete(result3 =>
+                        {
+                            if (!result3.IsError)
+                            {
+                                User userr = result3.GetUser();
+                                string oculususerid = userr.ID.ToString();
+                                string oculususername = userr.OculusID;
+                                if (string.IsNullOrEmpty(oculususerid) || oculususerid.Equals("0")) throw new System.Exception("Cannot login, Oculus User ID must be a non-zero value. (Did you do your User ID and User Profile DUCs?)");
+
+                                Users.GetUserProof().OnComplete(result4 =>
+                                {
+                                    if (!result4.IsError)
+                                    {
+                                        EOSManager.Initialize(new TransportInitializeOptions()
+                                        {
+                                            AuthInterfaceCredentialType = LoginCredentialType.ExternalAuth,
+                                            ConnectInterfaceCredentialType = ExternalCredentialType.OculusUseridNonce,
+
+                                            ProductName = productName,
+                                            ProductId = productId,
+                                            ClientId = clientId,
+                                            ClientSecret = clientSecret,
+                                            SandboxId = sandboxId,
+                                            DeploymentId = deploymentId,
+                                            EncryptionKey = encryptionKey,
+
+                                            DisplayName = oculususername,
+                                            LoginToken = $"{oculususerid}|{result4.Data.Value}"
+                                        });
+                                    }
+                                    else Debug.LogError($"Oculus nonce validation failed with message: {result4.GetError().Message}");
+                                });
+                            }
+                            else Debug.LogError($"Oculus login failed with message: {result3.GetError().Message}");
+                        });
+                    }
+                    else Debug.LogError($"Entitlement check failed with message: {result2.GetError().Message}");
+                });
+            }
+            else Debug.LogError($"Oculus init failed with message: {result1.GetError().Message}");
+        });
+
+        
+    }
+}

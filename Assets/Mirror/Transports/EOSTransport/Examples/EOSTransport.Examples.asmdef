@@ -1,0 +1,21 @@
+{
+    "name": "EOSTransport.Examples",
+    "rootNamespace": "EpicTransport.Examples",
+    "references": [
+        "GUID:dbc173c7cf9e0b148811d14369723240",
+        "GUID:30817c1a0e6d646d99c048fc403f5979",
+        "GUID:5590fd429f9ea92459e11ed7824e0226"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [
+        "WebGL",
+        "WindowsStandalone32"
+    ],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
