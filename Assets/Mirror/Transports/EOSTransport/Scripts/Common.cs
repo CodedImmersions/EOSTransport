@@ -11,8 +11,8 @@ namespace EpicTransport
     {
         protected ProductUserId MyPUID;
 
-        protected EOSTransport transport { get; private set; }
-        protected P2PInterface p2p { get; private set; }
+        protected EOSTransport Transport { get; private set; }
+        protected P2PInterface P2P { get; private set; }
         protected List<SocketId> deadsockets;
 
         protected ulong connreqid;
@@ -25,16 +25,16 @@ namespace EpicTransport
         public bool ShuttingDown { get; protected set; }
 
         //used to save memory
-        private SendPacketOptions sendopt = new SendPacketOptions() { AllowDelayedDelivery = true, DisableAutoAcceptConnection = false };
-        private ReceivePacketOptions receiveopt = new ReceivePacketOptions() { MaxDataSizeBytes = P2PInterface.MAX_PACKET_SIZE };
+        private SendPacketOptions sendopt = new() { AllowDelayedDelivery = true, DisableAutoAcceptConnection = false };
+        private ReceivePacketOptions receiveopt = new() { MaxDataSizeBytes = P2PInterface.MAX_PACKET_SIZE };
 
         private readonly byte[] internalSendBuffer;
-        private byte[] internalReceiveBuffer;
+        private readonly byte[] internalReceiveBuffer;
         private readonly byte[] internalExtraDataBuffer;
         private readonly ArraySegment<byte> cachedSegment;
 
         private uint lastPacketId;
-        private Dictionary<PacketKey, List<Packet>> incomingpackets;
+        private readonly Dictionary<PacketKey, List<Packet>> incomingpackets;
 
         private int extralengthcache;
         private byte intmessagecache;
@@ -44,8 +44,8 @@ namespace EpicTransport
         protected Common(EOSTransport transport)
         {
             this.MyPUID = EOSManager.LocalUserProductID;
-            this.transport = transport;
-            this.p2p = EOSManager.GetP2PInterface();
+            this.Transport = transport;
+            this.P2P = EOSManager.GetP2PInterface();
 
             deadsockets = new List<SocketId>();
 
@@ -59,23 +59,23 @@ namespace EpicTransport
 
             incomingpackets = new Dictionary<PacketKey, List<Packet>>();
 
-            AddNotifyPeerConnectionRequestOptions connreqopt = new AddNotifyPeerConnectionRequestOptions() { LocalUserId = EOSManager.LocalUserProductID };
-            connreqid = p2p.AddNotifyPeerConnectionRequest(ref connreqopt, null, OnIncomingConnectionRequest);
+            AddNotifyPeerConnectionRequestOptions connreqopt = new() { LocalUserId = EOSManager.LocalUserProductID };
+            connreqid = P2P.AddNotifyPeerConnectionRequest(ref connreqopt, null, OnIncomingConnectionRequest);
 
-            AddNotifyPeerConnectionEstablishedOptions estopt = new AddNotifyPeerConnectionEstablishedOptions() { LocalUserId = EOSManager.LocalUserProductID };
-            connestid = p2p.AddNotifyPeerConnectionEstablished(ref estopt, null, OnPeerConnected);
+            AddNotifyPeerConnectionEstablishedOptions estopt = new() { LocalUserId = EOSManager.LocalUserProductID };
+            connestid = P2P.AddNotifyPeerConnectionEstablished(ref estopt, null, OnPeerConnected);
 
-            AddNotifyPeerConnectionClosedOptions closedopt = new AddNotifyPeerConnectionClosedOptions() { LocalUserId = EOSManager.LocalUserProductID };
-            connclosedid = p2p.AddNotifyPeerConnectionClosed(ref closedopt, null, OnRemoteConnectionClosed);
+            AddNotifyPeerConnectionClosedOptions closedopt = new() { LocalUserId = EOSManager.LocalUserProductID };
+            connclosedid = P2P.AddNotifyPeerConnectionClosed(ref closedopt, null, OnRemoteConnectionClosed);
 
             pkcache = new PacketKey();
         }
 
         public void Dispose()
         {
-            p2p.RemoveNotifyPeerConnectionRequest(connreqid);
-            p2p.RemoveNotifyPeerConnectionEstablished(connestid);
-            p2p.RemoveNotifyPeerConnectionClosed(connclosedid);
+            P2P.RemoveNotifyPeerConnectionRequest(connreqid);
+            P2P.RemoveNotifyPeerConnectionEstablished(connestid);
+            P2P.RemoveNotifyPeerConnectionClosed(connclosedid);
         }
 
         private void OnRemoteConnectionClosed(ref OnRemoteConnectionClosedInfo cb)
@@ -145,7 +145,7 @@ namespace EpicTransport
             sendopt.Reliability = EOSTransport.Channels[channel];
             sendopt.Data = data;
 
-            return p2p.SendPacket(ref sendopt) == Result.Success;
+            return P2P.SendPacket(ref sendopt) == Result.Success;
         }
 
         protected bool SendInternalData(ProductUserId peer, SocketId socket, InternalMessages msg, byte[] extradata = null)
@@ -164,14 +164,14 @@ namespace EpicTransport
             sendopt.Reliability = PacketReliability.ReliableOrdered;
             sendopt.Data = new ArraySegment<byte>(internalSendBuffer, 0, extradata != null ?  1 + extradata.Length : 1);
 
-            return p2p.SendPacket(ref sendopt) == Result.Success;
+            return P2P.SendPacket(ref sendopt) == Result.Success;
         }
 
         public void ReceiveData()
         {
             try
             {
-                while (transport.enabled && Receive(out ProductUserId ipeer, out SocketId isocket, out ArraySegment<byte> ibuffer, EOSTransport.InternalChannel))
+                while (Transport.enabled && Receive(out ProductUserId ipeer, out SocketId isocket, out ArraySegment<byte> ibuffer, EOSTransport.InternalChannel))
                 {
                     intmessagecache = ibuffer.Array[ibuffer.Offset];
                     extralengthcache = ibuffer.Count - 1;
@@ -186,7 +186,7 @@ namespace EpicTransport
 
                 for (int ch = 0; ch < EOSTransport.Channels.Count; ch++)
                 {
-                    while (transport.enabled && Receive(out ProductUserId peer, out SocketId socket, out ArraySegment<byte> buffer, (byte)ch))
+                    while (Transport.enabled && Receive(out ProductUserId peer, out SocketId socket, out ArraySegment<byte> buffer, (byte)ch))
                     {
                         pcache = new Packet(buffer);
                         pkcache.peer = peer;
@@ -212,8 +212,8 @@ namespace EpicTransport
                                 SendInternalData(peer, socket, InternalMessages.DISCONNECT);
                                 TransportLogger.LogWarning($"Max packet fragments reached. Disconnecting connection '{peer}' due to packet spamming.");
 
-                                CloseConnectionOptions closeopt = new CloseConnectionOptions() { LocalUserId = EOSManager.LocalUserProductID, RemoteUserId = peer, SocketId = socket };
-                                p2p.CloseConnection(ref closeopt);
+                                CloseConnectionOptions closeopt = new() { LocalUserId = EOSManager.LocalUserProductID, RemoteUserId = peer, SocketId = socket };
+                                P2P.CloseConnection(ref closeopt);
                             }
                             else if (NetworkClient.isConnected)
                             {
@@ -283,9 +283,8 @@ namespace EpicTransport
 
             peer = default;
             socket = default;
-            uint writtenbytes = 0;
 
-            Result result = p2p.ReceivePacket(ref receiveopt, ref peer, ref socket, out channel, cachedSegment, out writtenbytes);
+            Result result = P2P.ReceivePacket(ref receiveopt, ref peer, ref socket, out _, cachedSegment, out uint writtenbytes);
 
             if (result != Result.NotFound && result != Result.Success) TransportLogger.LogWarning($"Receive returned Result.{result}.");
 
@@ -295,7 +294,7 @@ namespace EpicTransport
 
         protected List<Packet> FragmentData(ArraySegment<byte> data, int channelId)
         {
-            List<Packet> packets = new List<Packet>();
+            List<Packet> packets = new();
             uint id = lastPacketId++;
 
             int maxpayload = EOSTransport.instance.GetMaxPacketSize(channelId);

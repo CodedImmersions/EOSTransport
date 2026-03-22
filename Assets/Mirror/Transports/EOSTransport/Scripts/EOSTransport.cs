@@ -14,10 +14,11 @@ using Attribute = Epic.OnlineServices.Lobby.Attribute;
 
 namespace EpicTransport
 {
+    [DefaultExecutionOrder(-1000)]
     public class EOSTransport : Transport
     {
         public static EOSTransport Instance => instance; //literally only used for people upgrading from older versions.
-        public static EOSTransport instance;
+        public static EOSTransport instance; //might be obsoleted in future versions to keep a good naming scheme practice.
 
         public const string Version = "3.0.0";
         public const string EOSVersion = "1.19.0.3";
@@ -60,7 +61,14 @@ namespace EpicTransport
 
         private void Awake()
         {
-            instance = this;
+            //BUG: fixed by Hunter Allen (700075055887155310) on Discord. Delete this object if another instance already exists.
+            if (instance == null)
+                instance = this;
+            else
+            {
+                TransportLogger.LogWarning("An EOSTransport already exists in this game run, destroying script instance.");
+                Destroy(this);
+            }
         }
 
         private IEnumerator Start()
@@ -70,8 +78,7 @@ namespace EpicTransport
 
             InternalStuff();
 
-            SetRelayControlOptions controlopt = new SetRelayControlOptions() { RelayControl = relayControl };
-            EOSManager.GetP2PInterface().SetRelayControl(ref controlopt);
+            ChangeRelayControl(relayControl);
         }
 
         public void ChangeRelayControl(RelayControl control)
@@ -224,11 +231,17 @@ namespace EpicTransport
             connectedLobbyInfo = null;
 
             TransportLogger.Log("Transport shut down.");
-
             Resources.UnloadUnusedAssets();
         }
 
-        public override bool Available() => EOSManager.Initialized;
+        public override bool Available()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            return false;
+#else
+            return true;
+#endif
+        }
 
         public override int GetMaxPacketSize(int channelId = 0) => P2PInterface.MAX_PACKET_SIZE - Packet.HeaderSize;
 
@@ -241,7 +254,7 @@ namespace EpicTransport
 
         private void InternalStuff()
         {
-            OnJoinedLobby += (id) =>
+            OnJoinedLobby += (_) =>
             {
                 AddNotifyLobbyMemberStatusReceivedOptions updateopt = new AddNotifyLobbyMemberStatusReceivedOptions();
                 updateid = EOSManager.GetLobbyInterface().AddNotifyLobbyMemberStatusReceived(ref updateopt, null, (ref LobbyMemberStatusReceivedCallbackInfo cb) =>
@@ -255,7 +268,7 @@ namespace EpicTransport
                 });
             };
 
-            OnLeftLobby += () => EOSManager.GetLobbyInterface().RemoveNotifyLobbyMemberStatusReceived(updateid);
+            OnLeftLobby += (_) => EOSManager.GetLobbyInterface().RemoveNotifyLobbyMemberStatusReceived(updateid);
         }
 
         internal void UpdateMaxPlayers(int max)
@@ -263,19 +276,56 @@ namespace EpicTransport
             if (server != null) server.maxconnections = max;
             NetworkManager.singleton.maxConnections = max;
         }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
+        private static void ClearStatics()
+        {
+            instance = null;
+            manager = null;
+        }
+
+        //success (or fail with no exception)
+        private static void CreateTransportCallback(TransportCallbackEvent @event, bool success, Result result, string lobbyId = null)
+        {
+            ProductUserId host = instance.ServerActive() ? EOSManager.LocalUserProductID : instance.client?.HostProductId;
+            if (lobbyId == null) lobbyId = ConnectedLobbyInfo.LobbyId;
+
+            TransportCallback cb = new TransportCallback(@event, success, result, lobbyId, host);
+        }
+
+        //fail with exception
+        private static void CreateTransportCallback(TransportCallbackEvent @event, Exception exception, string lobbyId = null)
+        {
+            ProductUserId host = instance.ServerActive() ? EOSManager.LocalUserProductID : instance.client?.HostProductId;
+            if (lobbyId == null) lobbyId = ConnectedLobbyInfo.LobbyId;
+
+            TransportCallback cb = new TransportCallback(@event, false, Result.UnexpectedError, lobbyId, host, exception);
+
+            switch (@event)
+            {
+                case TransportCallbackEvent.JoinLobby:
+                    instance.OnJoinedLobby.Invoke(cb); break;
+
+                case TransportCallbackEvent.LeaveLobby:
+                    instance.OnLeftLobby.Invoke(cb); break;
+
+                case TransportCallbackEvent.HostMigrate:
+                    instance.OnHostMigrate.Invoke(cb); break;
+            }
+        }
         #endregion
 
         #region Lobby Methods
 
-        //arg1 (string) is lobby id
-        public static Action<string> OnJoinedLobby;
-        public static Action OnLeftLobby;
-        public static Action<LobbyMemberStatusReceivedCallbackInfo> OnLobbyMemberStatusUpdated;
+        public event Action<TransportCallback> OnJoinedLobby;
+        public event Action<TransportCallback> OnLeftLobby;
+        public event Action<TransportCallback> OnHostMigrate;
+        public event Action<LobbyMemberStatusReceivedCallbackInfo> OnLobbyMemberStatusUpdated;
 
         /// <summary>
         /// Creates a public lobby, then starts Mirror host if successful.
         /// </summary>
-        /// <param name="lobbyId">The ID of the lobby. Must be between 4 and 60 characters.</param>
+        /// <param name="lobbyId">The ID of the lobby. Must be between 1 and 60 characters.</param>
         /// <param name="maxPlayers">The maximum allowed members of the lobby. Value must be between 1 and 64.</param>
         /// <param name="attributes">(Optional) Extra attributes added to the lobby on creation.</param>
         /// <param name="bucketId">(Optional) The optional Bucket ID to add to this lobby, usually in GameMode:Region:MapName format.</param>
@@ -284,17 +334,32 @@ namespace EpicTransport
         public static void CreateLobby(string lobbyId, uint maxPlayers, List<AttributeData> attributes = null, string bucketId = null, LobbyPermissionLevel permissionLevel = LobbyPermissionLevel.Publicadvertised, bool presenceEnabled = false)
         {
             if (!EOSManager.Initialized) return;
-            if (string.IsNullOrEmpty(lobbyId)) throw new ArgumentNullException(nameof(lobbyId), "Lobby ID cannot be null.");
+            if (string.IsNullOrEmpty(lobbyId))
+            {
+                ArgumentNullException e = new ArgumentNullException(nameof(lobbyId), "Lobby ID cannot be null.");
+                CreateTransportCallback(TransportCallbackEvent.JoinLobby, e, string.Empty);
+                throw e;
+            }
             //if (lobbyId.Length is < LobbyInterface.MIN_LOBBYIDOVERRIDE_LENGTH or > LobbyInterface.MAX_LOBBYIDOVERRIDE_LENGTH) throw new ArgumentOutOfRangeException(nameof(lobbyId), $"Specified lobby id must be between {LobbyInterface.MIN_LOBBYIDOVERRIDE_LENGTH} and {LobbyInterface.MAX_LOBBYIDOVERRIDE_LENGTH} characters. Current length: {lobbyId.Length}.");
-            if (maxPlayers is < 1 or > LobbyInterface.MAX_LOBBY_MEMBERS) throw new ArgumentOutOfRangeException(nameof(maxPlayers), $"Max players must be between 1 and {LobbyInterface.MAX_LOBBY_MEMBERS}. Current max players: {maxPlayers}.");
+            if (maxPlayers is < 1 or > LobbyInterface.MAX_LOBBY_MEMBERS)
+            {
+                ArgumentOutOfRangeException e = new ArgumentOutOfRangeException(nameof(maxPlayers), $"Max players must be between 1 and {LobbyInterface.MAX_LOBBY_MEMBERS}. Current max players: {maxPlayers}.");
+                CreateTransportCallback(TransportCallbackEvent.JoinLobby, e, lobbyId);
+                throw e;
+            }
 
-            if (!Helper.IsUrlSafe(lobbyId)) throw new FormatException("Lobby ID is not URL-safe. Please make it URL-safe, then try again.");
+            if (!Helper.IsUrlSafe(lobbyId))
+            {
+                FormatException e = new FormatException("Lobby ID is not URL-safe. Please make it URL-safe, then try again.");
+                CreateTransportCallback(TransportCallbackEvent.JoinLobby, e, lobbyId);
+                throw e;
+            }
             lobbyId = Helper.ToEOSString(lobbyId);
 
             CreateLobbyOptions createopt = new CreateLobbyOptions()
             {
                 LocalUserId = EOSManager.LocalUserProductID,
-                BucketId = bucketId != null ? bucketId : $"{Application.version}:{Version}:{EOSVersion}",
+                BucketId = bucketId ?? $"{Application.version}:{Version}:{EOSVersion}",
                 MaxLobbyMembers = maxPlayers,
                 DisableHostMigration = !HostMigrationEnabled,
                 EnableJoinById = true,
@@ -306,7 +371,11 @@ namespace EpicTransport
             EOSManager.GetLobbyInterface().CreateLobby(ref createopt, null, (ref CreateLobbyCallbackInfo cb) =>
             {
                 if (cb.ResultCode == Result.LobbyLobbyAlreadyExists) TransportLogger.LogError($"Failed to create lobby: lobby already exists in the EOS system. Please use the {nameof(JoinLobby)}(string) method instead.");
-                if (cb.ResultCode != Result.Success) throw new EOSSDKException(cb.ResultCode, "Failed to create lobby!");
+                if (cb.ResultCode != Result.Success)
+                {
+                    CreateTransportCallback(TransportCallbackEvent.JoinLobby, false, cb.ResultCode, lobbyId);
+                    throw new EOSSDKException(cb.ResultCode, "Failed to create lobby!");
+                }
 
                 if (attributes == null) attributes = new List<AttributeData>();
                 attributes.Insert(0, new AttributeData() { Key = DefaultAttributeKey, Value = DefaultAttributeKey }); //useful for searching for lobbies in the EOS dashboard.
@@ -326,11 +395,20 @@ namespace EpicTransport
                 UpdateLobbyOptions updateopt2 = new UpdateLobbyOptions() { LobbyModificationHandle = mod };
                 EOSManager.GetLobbyInterface().UpdateLobby(ref updateopt2, null, (ref UpdateLobbyCallbackInfo cb2) =>
                 {
-                    if (cb2.ResultCode != Result.Success) throw new EOSSDKException(cb2.ResultCode, "Failed to add lobby attributes!");
+                    if (cb2.ResultCode != Result.Success)
+                    {
+                        CreateTransportCallback(TransportCallbackEvent.JoinLobby, false, cb2.ResultCode, lobbyId);
+                        throw new EOSSDKException(cb2.ResultCode, "Failed to add lobby attributes!");
+                    }
 
                     CopyLobbyDetailsHandleOptions detailsopt = new CopyLobbyDetailsHandleOptions() { LocalUserId = EOSManager.LocalUserProductID, LobbyId = lobbyid };
                     Result res = EOSManager.GetLobbyInterface().CopyLobbyDetailsHandle(ref detailsopt, out LobbyDetails details);
-                    if (res != Result.Success) throw new EOSSDKException(res, "Failed to get lobby details when joining lobby by ID!");
+
+                    if (res != Result.Success)
+                    {
+                        CreateTransportCallback(TransportCallbackEvent.JoinLobby, false, res, lobbyId);
+                        throw new EOSSDKException(res, "Failed to get lobby details when joining lobby by ID!");
+                    }
 
                     NetworkManager.singleton.StartHost();
 
@@ -342,8 +420,7 @@ namespace EpicTransport
                     };
 
                     UpdateMemberAttribute(new AttributeData() { Key = DisplayNameKey, Value = EOSManager.DisplayName });
-
-                    OnJoinedLobby?.Invoke(lobbyId);
+                    CreateTransportCallback(TransportCallbackEvent.JoinLobby, true, Result.Success);
                 });
             });
         }
@@ -356,32 +433,47 @@ namespace EpicTransport
         {
             if (!EOSManager.Initialized) return;
 
+            string lobbyId;
+
+            LobbyDetailsCopyInfoOptions copyopt = new LobbyDetailsCopyInfoOptions();
+            Result res = lobby.CopyInfo(ref copyopt, out LobbyDetailsInfo? info);
+            if (res == Result.Success)
+                lobbyId = info.Value.LobbyId;
+            else
+            {
+                CreateTransportCallback(TransportCallbackEvent.JoinLobby, false, res, string.Empty);
+                throw new EOSSDKException(res, "Failed to copy lobby info!");
+            }
+
             JoinLobbyOptions joinopt = new JoinLobbyOptions() { LocalUserId = EOSManager.LocalUserProductID, LobbyDetailsHandle = lobby };
             EOSManager.GetLobbyInterface().JoinLobby(ref joinopt, null, (ref JoinLobbyCallbackInfo cb) =>
             {
-                if (cb.ResultCode != Result.Success) throw new EOSSDKException(cb.ResultCode, "Failed to join lobby!");
+                if (cb.ResultCode != Result.Success)
+                {
+                    CreateTransportCallback(TransportCallbackEvent.JoinLobby, false, cb.ResultCode, lobbyId);
+                    throw new EOSSDKException(cb.ResultCode, "Failed to join lobby!");
+                }
 
-                LobbyDetailsCopyAttributeByKeyOptions copyopt = new LobbyDetailsCopyAttributeByKeyOptions() { AttrKey = HostAddressKey };
-                Result res1 = lobby.CopyAttributeByKey(ref copyopt, out Attribute? hostaddress);
-                if (res1 != Result.Success) throw new EOSSDKException(res1, "Failed to get Host Address when joining lobby!");
+                LobbyDetailsCopyAttributeByKeyOptions copyopt2 = new LobbyDetailsCopyAttributeByKeyOptions() { AttrKey = HostAddressKey };
+                Result res1 = lobby.CopyAttributeByKey(ref copyopt2, out Attribute? hostaddress);
+                if (res1 != Result.Success)
+                {
+                    CreateTransportCallback(TransportCallbackEvent.JoinLobby, false, res1, lobbyId);
+                    throw new EOSSDKException(res1, "Failed to get Host Address when joining lobby!");
+                }
 
                 UriBuilder urib = new UriBuilder() { Scheme = EpicScheme, Host = hostaddress.Value.Data.Value.Value.AsUtf8 };
                 NetworkManager.singleton.StartClient(urib.Uri);
 
-                LobbyDetailsCopyInfoOptions copyopt2 = new LobbyDetailsCopyInfoOptions();
-                Result res2 = lobby.CopyInfo(ref copyopt2, out LobbyDetailsInfo? info);
-                if (res2 != Result.Success) throw new EOSSDKException(res2, "Failed to copy lobby info!");
-
                 instance.connectedLobbyInfo = new LobbyInfo()
                 {
                     IsLobbyOwner = false,
-                    LobbyId = info.Value.LobbyId,
+                    LobbyId = lobbyId,
                     CurrentLobbyDetails = lobby
                 };
 
                 UpdateMemberAttribute(new AttributeData() { Key = DisplayNameKey, Value = EOSManager.DisplayName });
-
-                OnJoinedLobby?.Invoke(info.Value.LobbyId);
+                CreateTransportCallback(TransportCallbackEvent.JoinLobby, true, cb.ResultCode);
             });
         }
 
@@ -411,7 +503,6 @@ namespace EpicTransport
                 if (res2 != Result.Success) throw new EOSSDKException(res2, "Failed to get Host Address when joining lobby by ID!");
 
                 string ha = hostaddress.Value.Data.Value.Value.AsUtf8;
-                TransportLogger.Log(ha);
                 UriBuilder urib = new UriBuilder() { Scheme = EpicScheme, Host = ha };
                 NetworkManager.singleton.StartClient(urib.Uri);
 
@@ -423,12 +514,12 @@ namespace EpicTransport
                 };
 
                 UpdateMemberAttribute(new AttributeData() { Key = DisplayNameKey, Value = EOSManager.DisplayName });
-
-                OnJoinedLobby?.Invoke(id);
+                CreateTransportCallback(TransportCallbackEvent.JoinLobby, true, cb.ResultCode);
             });
             
         }
 
+        //TODO: switch to Task<List<LobbyDetails>>
         /// <summary>
         /// Finds all the current open lobbies.
         /// </summary>
@@ -439,10 +530,12 @@ namespace EpicTransport
             SearchForLobbiesByAttribute(new AttributeData { Key = DefaultAttributeKey, Value = DefaultAttributeKey }, maxResults, cb => { callback.Invoke(cb); });
         }
 
+
+        //TODO: switch to Task<List<LobbyDetails>>
         /// <summary>
         /// Searches for lobbies based on attribute of the lobby.
         /// </summary>
-        /// <param name="attribute">The <see cref="Epic.OnlineServices.Lobby.Attribute"/> used to search.</param>
+        /// <param name="attribute">The <see cref="AttributeData"/> used to search.</param>
         /// <param name="maxResults">The maximum results returned. Value must be between 1 and 200.</param>
         /// <param name="callback">The callback for once the search has finished. Note: will not be called if there is an error thrown.</param>
         public static void SearchForLobbiesByAttribute(AttributeData attribute, uint maxResults, Action<List<LobbyDetails>> callback)
@@ -478,6 +571,7 @@ namespace EpicTransport
             });
         }
 
+        //TODO: switch to Task<List<LobbyDetails>>
         /// <summary>
         /// Searches for lobbies based on the id of the lobby.
         /// </summary>
@@ -517,6 +611,7 @@ namespace EpicTransport
             });
         }
 
+        //TODO: switch to Task<List<LobbyDetails>>
         /// <summary>
         /// Searches for lobbies based on a member of the lobby.
         /// </summary>
@@ -604,7 +699,7 @@ namespace EpicTransport
                 NetworkManager.singleton.StopClient();
 
                 instance.connectedLobbyInfo = null;
-                OnLeftLobby?.Invoke();
+                CreateTransportCallback(TransportCallbackEvent.LeaveLobby, true, Result.Success, lobbyId);
             });
         }
 
@@ -624,7 +719,7 @@ namespace EpicTransport
                 NetworkManager.singleton.StopHost();
 
                 instance.connectedLobbyInfo = null;
-                OnLeftLobby?.Invoke();
+                CreateTransportCallback(TransportCallbackEvent.LeaveLobby, true, Result.Success, lobbyId);
             });
         }
 
@@ -832,5 +927,73 @@ namespace EpicTransport
             return @out.Value.Data.Value.Value.AsUtf8;
         }
         #endregion
+    }
+
+    /// <summary>
+    /// Struct containing the data for each event in <see cref="EOSTransport"/>.
+    /// </summary>
+    public struct TransportCallback
+    {
+        internal TransportCallback(TransportCallbackEvent @event, bool success, Result result, string lobbyId, ProductUserId host, Exception exception = null)
+        {
+            Event = @event;
+            Success = success;
+            Result = result;
+            Exception = exception;
+            LobbyId = lobbyId;
+            Host = host;
+        }
+
+        /// <summary>
+        /// The event this callback is.
+        /// </summary>
+        public TransportCallbackEvent Event { get; }
+
+        /// <summary>
+        /// Whether this callback is a success of failure. If it is a failure, the exception of the failure will be provided in <see cref="Exception"/>.
+        /// </summary>
+        public bool Success { get; }
+
+        /// <summary>
+        /// The EOS Result of the action. If this callback failed with an exception, this will be <see cref="Result.UnexpectedError"/>.
+        /// </summary>
+        public Result Result { get; }
+
+        /// <summary>
+        /// If this callback failed with an exception, access the exception it failed to here.
+        /// </summary>
+        public Exception Exception { get; }
+
+        /// <summary>
+        /// The ID of the current lobby. If this callback is a callback for leaving a lobby, it will be the ID of the lobby that was just left.
+        /// </summary>
+        public string LobbyId { get; }
+
+        /// <summary>
+        /// The <see cref="ProductUserId"/> of the current host of the lobby. If we are leaving a lobby, this will be the host of that lobby. If we are host migrating, this will be the new host's ID.
+        /// </summary>
+        public ProductUserId Host { get; }
+    }
+
+
+    /// <summary>
+    /// Used with <see cref="TransportCallback"/> to provide details on key EOSTransport events.
+    /// </summary>
+    public enum TransportCallbackEvent
+    {
+        /// <summary>
+        /// The callback event for when the current player joins/creates a lobby.
+        /// </summary>
+        JoinLobby = 0,
+
+        /// <summary>
+        /// The callback event for when the current player leaves a lobby.
+        /// </summary>
+        LeaveLobby = 1,
+
+        /// <summary>
+        /// The callback event for when the current lobby is host migrated.
+        /// </summary>
+        HostMigrate = 2
     }
 }

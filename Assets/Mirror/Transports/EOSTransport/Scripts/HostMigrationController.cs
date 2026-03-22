@@ -51,23 +51,33 @@ namespace EpicTransport
         private ulong updateid;
         internal static HostMigrationMessage message { get; private set; }
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
+        private static void ResetStatics()
+        {
+            instance = null;
+        }
+
         private void Awake()
         {
-            instance = this;
+            if (instance == null) instance = this;
+        }
 
+        private void Start()
+        {
             socket = new SocketId() { SocketName = Helper.GenerateHexString(16) };
-            EOSTransport.OnJoinedLobby += OnStartClient;
-            EOSTransport.OnLeftLobby += OnStopClient;
+            EOSTransport.instance.OnJoinedLobby += OnStartClient;
+            EOSTransport.instance.OnLeftLobby += OnStopClient;
         }
 
         private void OnDestroy()
         {
-            EOSTransport.OnJoinedLobby -= OnStartClient;
-            EOSTransport.OnLeftLobby -= OnStopClient;
+            EOSTransport.instance.OnJoinedLobby -= OnStartClient;
+            EOSTransport.instance.OnLeftLobby -= OnStopClient;
         }
 
-        private void OnStartClient(string lobbyname)
+        private void OnStartClient(TransportCallback cb)
         {
+            if (!cb.Success) return;
             if (EOSTransport.HostMigrationEnabled)
             {
                 jsonsettings = new JsonSerializerSettings()
@@ -93,8 +103,9 @@ namespace EpicTransport
             }
         }
 
-        private void OnStopClient()
+        private void OnStopClient(TransportCallback cb)
         {
+            if (!cb.Success) return;
             CancelInvoke(nameof(Backup));
             EOSManager.GetLobbyInterface().RemoveNotifyLobbyMemberStatusReceived(updateid);
         }

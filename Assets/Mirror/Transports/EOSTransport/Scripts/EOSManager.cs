@@ -13,9 +13,13 @@ using UnityEngine;
 
 namespace EpicTransport
 {
+    [DefaultExecutionOrder(-1000)]
     public class EOSManager : MonoBehaviour
     {
+        public static EOSManager Instance => instance;
+#pragma warning disable IDE1006 // Naming Styles
         public static EOSManager instance { get; private set; }
+#pragma warning restore IDE1006 // Naming Styles
 
         #region Public Fields
         [Header("Settings")]
@@ -25,17 +29,9 @@ namespace EpicTransport
         #endregion
 
         #region Private Fields
-#if UNITY_EDITOR
-        //if the platform interface has already been initialized in the editor
-        private bool editorPlatformAlreadyInitialized;
-#endif
-
         private PlatformInterface Platform;
         private ulong connectAuthExpirationHandle;
 
-        private LoginCredentialType loginCredentialType;
-        private ExternalCredentialType externalCredentialType;
-        private string connectCredToken;
         private string displayName;
 
         private ProductUserId localUserProductID;
@@ -47,6 +43,9 @@ namespace EpicTransport
         private bool isConnecting;
         private bool initialized;
 
+#if UNITY_EDITOR
+        private EditorSDKLoadHelper editorLoadHelper;
+#endif
         private static TransportInitializeOptions initoptions;
         #endregion
 
@@ -68,147 +67,36 @@ namespace EpicTransport
         public static string LocalUserAccountIDString { get { return instance.localUserAccountIDString; } }
 
         public static string DisplayName { get { return instance.displayName; } set { instance.displayName = value; } }
-
-
         #endregion
-
-        #region Editor Library Loading
-
-#if UNITY_EDITOR_WIN
-        [DllImport("Kernel32.dll")]
-        private static extern IntPtr LoadLibrary(string lpLibFileName);
-
-        [DllImport("Kernel32.dll")]
-        private static extern int FreeLibrary(IntPtr hLibModule);
-
-        [DllImport("Kernel32.dll")]
-        private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
-
-        private IntPtr libraryPointer;
-#endif
-
-#if UNITY_EDITOR_OSX
-        [DllImport("libdl.dylib")]
-        private static extern IntPtr dlopen(string filename, int flags);
-
-        [DllImport("libdl.dylib")]
-        private static extern int dlclose(IntPtr handle);
-
-        [DllImport("libdl.dylib")]
-        private static extern IntPtr dlsym(IntPtr handle, string symbol);
-
-        [DllImport("libdl.dylib")]
-        private static extern IntPtr dlerror();
-
-        private const int RTLD_NOW = 2;
-        private IntPtr libraryPointer;
-
-        public static IntPtr LoadLibrary(string path) {
-
-            dlerror();
-            IntPtr handle = dlopen(path, RTLD_NOW);
-            if (handle == IntPtr.Zero) {
-                IntPtr error = dlerror();
-                throw new Exception("dlopen: " + Marshal.PtrToStringAnsi(error));
-            }
-            return handle;
-        }
-
-        public static int FreeLibrary(IntPtr handle) {
-            return dlclose(handle);
-        }
-
-        public static IntPtr GetProcAddress(IntPtr handle, string procName) {
-
-            dlerror();
-            IntPtr res = dlsym(handle, procName);
-            IntPtr errPtr = dlerror();
-            if (errPtr != IntPtr.Zero) {
-                throw new Exception("dlsym: " + Marshal.PtrToStringAnsi(errPtr));
-            }
-            return res;
-        }
-#endif
-
-#if UNITY_EDITOR_LINUX
-        [DllImport("__Internal")]
-        private static extern IntPtr dlopen(string filename, int flags);
-
-        [DllImport("__Internal")]
-        private static extern int dlclose(IntPtr handle);
-
-        [DllImport("__Internal")]
-        private static extern IntPtr dlsym(IntPtr handle, string symbol);
-
-        [DllImport("__Internal")]
-        private static extern IntPtr dlerror();
-
-        private const int RTLD_NOW = 2;
-        private IntPtr libraryPointer;
-
-        public static IntPtr LoadLibrary(string path) {
-            dlerror();
-
-            IntPtr handle = dlopen(path, RTLD_NOW);
-
-            if (handle == IntPtr.Zero) {
-                IntPtr error = dlerror();
-                throw new Exception("dlopen failed: " + Marshal.PtrToStringAnsi(error));
-            }
-            return handle;
-        }
-
-        public static int FreeLibrary(IntPtr handle) {
-            return dlclose(handle);
-        }
-
-        public static IntPtr GetProcAddress(IntPtr handle, string procName) {
-            dlerror();
-            IntPtr res = dlsym(handle, procName);
-            IntPtr errPtr = dlerror();
-
-            if (errPtr != IntPtr.Zero) {
-                throw new Exception("dlsym: " + Marshal.PtrToStringAnsi(errPtr));
-            }
-            return res;
-        }
-
-        #endif
-        #endregion
-
+        
 
         private void Awake()
         {
-            if (instance != null && instance != this) Destroy(gameObject);
-            else instance = this;
+            //BUG: fixed by Hunter Allen (700075055887155310) on Discord. Delete this object if another instance already exists.
+            if (instance == null)
+                instance = this;
+            else if (instance != this)
+            {
+                TransportLogger.LogWarning("An EOSManager already exists in this game run, destroying script instance.");
+                Destroy(this);
+            }
 
 #if UNITY_EDITOR
-            string libname = Epic.OnlineServices.Common.LIBRARY_NAME;
-
-            #if UNITY_EDITOR_OSX
-            string[] parts = libname.Split('.');
-            libname = parts[0]; //removes the .dylib so unity can find it
-            #endif
-
-            string[] libs = UnityEditor.AssetDatabase.FindAssets(libname);
-            string librarypath = string.Empty;
-
-            if (libs.Length > 0) librarypath = UnityEditor.AssetDatabase.GUIDToAssetPath(libs[0]);
-            else throw new System.IO.FileNotFoundException($"EOS Assembly '{Epic.OnlineServices.Common.LIBRARY_NAME}' Not Found in Unity Project.", Epic.OnlineServices.Common.LIBRARY_NAME);
-
-            libraryPointer = LoadLibrary(librarypath);
-            if (libraryPointer == IntPtr.Zero) throw new Exception("Failed to load library: " + librarypath);
-
-            Bindings.Hook(libraryPointer, GetProcAddress);
+            if (editorLoadHelper == null)
+            {
+                editorLoadHelper = new EditorSDKLoadHelper();
+                editorLoadHelper.Load();
+            }
 #endif
 
 
             if (Application.platform == RuntimePlatform.Android)
             {
-                using (AndroidJavaClass loader = new AndroidJavaClass("com.epicgames.mobile.eossdk.LibraryLoader")) { loader.CallStatic("load"); }
+                using (AndroidJavaClass loader = new("com.epicgames.mobile.eossdk.LibraryLoader")) { loader.CallStatic("load"); }
 
 #if UNITY_6000_0_OR_NEWER
-                using (AndroidJavaClass eos = new AndroidJavaClass("com.epicgames.mobile.eossdk.EOSSDK")) { eos.CallStatic("init", UnityEngine.Android.AndroidApplication.currentActivity); }
+                using AndroidJavaClass eos = new("com.epicgames.mobile.eossdk.EOSSDK");
+                eos.CallStatic("init", UnityEngine.Android.AndroidApplication.currentActivity);
 #else
                 AndroidJavaClass player = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
                 AndroidJavaObject activity = player.GetStatic<AndroidJavaObject>("currentActivity");
@@ -233,12 +121,12 @@ namespace EpicTransport
         {
             if (IsConnecting || Initialized) return;
 
-            if (options.EncryptionKey.Length != 64) throw new ArgumentOutOfRangeException(nameof(options.EncryptionKey), "Your EOS Encryption Key is not exactly 64 characters, or is not set. Please make sure it is exactly 32 hexadecimal bytes. (aka 64 characters, A-F, a-f, 0-9)");
+            if (options.EncryptionKey?.Length != 64) throw new ArgumentOutOfRangeException(nameof(options.EncryptionKey), "Your EOS Encryption Key is not exactly 64 characters, or is not set. Please make sure it is exactly 32 hexadecimal bytes. (aka 64 characters, A-F, a-f, 0-9)");
 
             initoptions = options;
             instance.isConnecting = true;
 
-            InitializeOptions initopt = new InitializeOptions()
+            InitializeOptions initopt = new()
             {
                 ProductName = options.ProductName,
                 ProductVersion = Application.version
@@ -249,12 +137,9 @@ namespace EpicTransport
 
             instance.gameObject.AddComponent<TransportLogger>().Initialize(instance.eosLoggerLevel, instance.transportLoggerLevel);
 
-            instance.loginCredentialType = options.AuthInterfaceCredentialType;
-            instance.externalCredentialType = options.ConnectInterfaceCredentialType;
-            instance.connectCredToken = options.LoginToken;
             DisplayName = options.DisplayName;
 
-            Options createopt = new Options()
+            Options createopt = new()
             {
                 ProductId = options.ProductId,
                 ClientCredentials = new ClientCredentials() { ClientId = options.ClientId, ClientSecret = options.ClientSecret },
@@ -301,7 +186,7 @@ namespace EpicTransport
                     {
                         TransportLogger.Log("using device id");
 
-                        CreateDeviceIdOptions idopt = new CreateDeviceIdOptions() { DeviceModel = SystemInfo.deviceModel };
+                        CreateDeviceIdOptions idopt = new() { DeviceModel = SystemInfo.deviceModel };
                         instance.Platform.GetConnectInterface().CreateDeviceId(ref idopt, null, (ref CreateDeviceIdCallbackInfo cb) =>
                         {
                             TransportLogger.Log("done");
@@ -357,7 +242,7 @@ namespace EpicTransport
                 if (displayName.Count() > ConnectInterface.USERLOGININFO_DISPLAYNAME_MAX_LENGTH) throw new ArgumentOutOfRangeException(nameof(displayName), $"DisplayName must be less than or equal to {ConnectInterface.USERLOGININFO_DISPLAYNAME_MAX_LENGTH} characters long.");
             }
 
-            Epic.OnlineServices.Connect.LoginOptions loginopt = new Epic.OnlineServices.Connect.LoginOptions()
+            Epic.OnlineServices.Connect.LoginOptions loginopt = new()
             {
                 Credentials = new Epic.OnlineServices.Connect.Credentials() { Type = initoptions.ConnectInterfaceCredentialType, Token = initoptions.LoginToken },
                 UserLoginInfo = new UserLoginInfo() { DisplayName = displayName }
@@ -387,7 +272,7 @@ namespace EpicTransport
                         //no user found, we need to create one.
                         if (cb.ContinuanceToken == null) throw new EOSSDKException(cb.ResultCode, "Continuance Token is null. Cannot create account.");
 
-                        CreateUserOptions createopt = new CreateUserOptions() { ContinuanceToken = cb.ContinuanceToken };
+                        CreateUserOptions createopt = new() { ContinuanceToken = cb.ContinuanceToken };
                         Platform.GetConnectInterface().CreateUser(ref createopt, null, (ref CreateUserCallbackInfo cb2) =>
                         {
                             if (cb2.ResultCode != Result.Success) throw new EOSSDKException(cb2.ResultCode, "Failed to create user!");
@@ -400,7 +285,7 @@ namespace EpicTransport
 
                             TransportLogger.Log("New account created!");
 
-                            AddNotifyAuthExpirationOptions aeexp2 = new AddNotifyAuthExpirationOptions();
+                            AddNotifyAuthExpirationOptions aeexp2 = new();
                             connectAuthExpirationHandle = Platform.GetConnectInterface().AddNotifyAuthExpiration(ref aeexp2, null, ConnectExpiration);
                         });
                         break;
@@ -426,7 +311,7 @@ namespace EpicTransport
         {
             TransportLogger.Log("Login with auth interface running");
 
-            Epic.OnlineServices.Auth.LoginOptions loginopt = new Epic.OnlineServices.Auth.LoginOptions()
+            Epic.OnlineServices.Auth.LoginOptions loginopt = new()
             {
                 Credentials = new Epic.OnlineServices.Auth.Credentials()
                 {
@@ -445,7 +330,7 @@ namespace EpicTransport
                 localUserAccountID = cb.LocalUserId;
                 localUserAccountIDString = cb.LocalUserId.ToString();
 
-                CopyUserInfoOptions copyopt = new CopyUserInfoOptions()
+                CopyUserInfoOptions copyopt = new()
                 {
                     LocalUserId = LocalUserAccountID,
                     TargetUserId = LocalUserAccountID
@@ -455,7 +340,7 @@ namespace EpicTransport
                 if (res1 != Result.Success) throw new EOSSDKException(res1, "Failed to copy user info!");
                 initoptions.DisplayName = dat.Value.DisplayName;
 
-                CopyUserAuthTokenOptions authopt = new CopyUserAuthTokenOptions();
+                CopyUserAuthTokenOptions authopt = new();
                 Result res2 = Platform.GetAuthInterface().CopyUserAuthToken(ref authopt, LocalUserAccountID, out Token? token);
                 if (res2 != Result.Success) throw new EOSSDKException(res2, "Failed to copy auth token!");
                 initoptions.LoginToken = token?.AccessToken;
@@ -466,60 +351,86 @@ namespace EpicTransport
 
         internal static void Tick()
         {
-            if (instance.Platform != null) instance.Platform.Tick();
+            instance.Platform?.Tick();
         }
 
         #endregion
 
         private void OnApplicationQuit()
         {
-            if (Platform != null)
-            {
-                Platform.GetConnectInterface().RemoveNotifyAuthExpiration(connectAuthExpirationHandle);
+            EOSTransport.LeaveLobby();
+            Platform?.GetConnectInterface().RemoveNotifyAuthExpiration(connectAuthExpirationHandle);
 
-                Platform.Release();
-                PlatformInterface.Shutdown();
-                Platform = null;
-            }
-
-#if UNITY_EDITOR
-            if (libraryPointer != IntPtr.Zero)
-            {
-                Bindings.Unhook();
-
-                while (FreeLibrary(libraryPointer) != 0) { }
-                libraryPointer = IntPtr.Zero;
-            }
-#endif
+            Platform?.Release();
+            Platform = null;
         }
     }
 
     [Serializable]
-    public class TransportInitializeOptions
+    public struct TransportInitializeOptions
     {
+        /// <summary>
+        /// The Auth Interface Credential Type. Set to <see cref="LoginCredentialType.ExternalAuth"/> if not using Auth Interface.
+        /// </summary>
         public LoginCredentialType AuthInterfaceCredentialType;
+
+        /// <summary>
+        /// The Connect Interface Credential Type. Needed both with and without Auth Interface.
+        /// </summary>
         public ExternalCredentialType ConnectInterfaceCredentialType;
 
+        #region Keys
+        /// <summary>
+        /// The name of the product on the EOS Developer Dashboard.
+        /// </summary>
         public string ProductName;
+
+        /// <summary>
+        /// The Product ID of the current app, found in Product Settings in the EOS Dashboard.
+        /// </summary>
         public string ProductId;
 
+
+        /// <summary>
+        /// The Client ID of the current app, found in Product Settings in the EOS Dashboard.
+        /// </summary>
         public string ClientId;
+
+        /// <summary>
+        /// The Client Secret of the current app, found in Product Settings in the EOS Dashboard.
+        /// </summary>
+        /// <remarks>Do not share this key with anyone.</remarks>
         public string ClientSecret;
 
+        /// <summary>
+        /// The Sandbox ID of the current app, found in Product Settings in the EOS Dashboard.
+        /// </summary>
         public string SandboxId;
+
+        /// <summary>
+        /// The Deployment ID of the current app (Live Deployment), found in Product Settings in the EOS Dashboard.
+        /// </summary>
         public string DeploymentId;
 
         /// <summary>
         /// A 32-byte (64-character) hexadecimal string used to encrypt Title Storage and Player Data Storage.
         /// </summary>
         public string EncryptionKey;
+        #endregion
 
-
+        /// <summary>
+        /// The player's display name. Not needed for the Auth Interface, as usernames arre set automatically there.
+        /// </summary>
         public string DisplayName;
 
+        /// <summary>
+        /// The ID used for logging in with the Auth Interface. Not needed if not using Connect Interface.
+        /// </summary>
         public string AuthId;
-        public string LoginToken;
 
-        public TransportInitializeOptions() { }
+        /// <summary>
+        /// The login token for the current user, used both for Connect and Auth Interfaces.
+        /// </summary>
+        public string LoginToken;
     }
 }

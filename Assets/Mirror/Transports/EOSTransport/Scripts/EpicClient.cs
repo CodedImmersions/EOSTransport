@@ -123,7 +123,7 @@ namespace EpicTransport
                     SocketId = cb.SocketId
                 };
 
-                Result res = p2p.AcceptConnection(ref acceptopt);
+                Result res = P2P.AcceptConnection(ref acceptopt);
                 if (res != Result.Success) throw new EOSSDKException(res, "Failed to accept host P2P connection!");
 
                 TransportLogger.Log($"accepted host connection {cb.RemoteUserId}.");

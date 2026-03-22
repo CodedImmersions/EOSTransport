@@ -3,9 +3,6 @@ using System.IO.Compression;
 using System.Text.RegularExpressions;
 using System.Xml;
 using UnityEditor;
-#if UNITY_ANDROID
-using UnityEditor.Android;
-#endif
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
@@ -14,14 +11,14 @@ namespace EpicTransport.Editor
 {
     //TODO: add logging
 #if UNITY_ANDROID
-    public class TransportBuildUtility : IPreprocessBuildWithReport, IPostGenerateGradleAndroidProject
+    public class TransportBuildUtility : IPreprocessBuildWithReport, UnityEditor.Android.IPostGenerateGradleAndroidProject
 #else
     public class TransportBuildUtility : IPreprocessBuildWithReport
 #endif
     {
         public int callbackOrder => -10;
 
-#region General
+        #region General
         public void OnPreprocessBuild(BuildReport report)
         {
             if (!Is64Bit(report.summary.platformGroup, report.summary.platform))
@@ -29,9 +26,19 @@ namespace EpicTransport.Editor
                 throw new BuildFailedException("EOSSDK 1.19.0.3+ requires a 64-bit build target. Please switch to a 64-bit platform.");
             }
 
+
 #if UNITY_ANDROID
             if (report.summary.platformGroup == BuildTargetGroup.Android)
             {
+#if !UNITY_6000_5_OR_NEWER
+                if (IsX86_64(PlayerSettings.Android.targetArchitectures))
+                {
+                    //Unity 6.5 deprecated Android x86_64 builds, so to keep compatibility across versions, x86_64 on Android with EOSTransport will no longer work.
+                    //plus, I don't think anyone even publishes Unity games to ChromeOS anymore, because the performance is so crappy.
+                    throw new BuildFailedException("EOSTransport does not support Android x86_64 builds. You may only build with aarch64 (ARM64) with EOSTransport.");
+                }
+#endif
+
                 string monoGradlePath = Path.Combine(Directory.GetCurrentDirectory(), "Library", "Bee", "Android", "Prj", "Mono2x", "Gradle");
                 if (Directory.Exists(monoGradlePath)) Directory.Delete(monoGradlePath, true);
 
@@ -69,7 +76,12 @@ namespace EpicTransport.Editor
                     BuildTarget.StandaloneWindows => false,
                     _ => true,
                 },
+
+#if !UNITY_6000_5_OR_NEWER
                 BuildTargetGroup.Android => PlayerSettings.Android.targetArchitectures.HasFlag(AndroidArchitecture.ARM64) || PlayerSettings.Android.targetArchitectures.HasFlag(AndroidArchitecture.X86_64),
+#else
+                BuildTargetGroup.Android => PlayerSettings.Android.targetArchitectures.HasFlag(AndroidArchitecture.ARM64),
+#endif
                 BuildTargetGroup.iOS => true,
                 BuildTargetGroup.PS4 or BuildTargetGroup.PS5 => true,
                 BuildTargetGroup.XboxOne => true,
@@ -77,10 +89,15 @@ namespace EpicTransport.Editor
                 _ => true,
             };
         }
-#endregion
+        #endregion
 
-#region Android
+        #region Android
 #if UNITY_ANDROID
+
+#if !UNITY_6000_5_OR_NEWER
+        private bool IsX86_64(AndroidArchitecture arch) => arch.HasFlag(AndroidArchitecture.X86_64);
+#endif
+
         public void OnPostGenerateGradleAndroidProject(string path) //'path' leads to the unityLibrary folder
         {
             GradlePropertiesData properties = ParseGradleProperties(path);
@@ -92,12 +109,13 @@ namespace EpicTransport.Editor
             ModifyRootBuildGradle(ref path, properties);
             AddAndroidX(ref path);
 
-            ModifyEosSdkAarDesugarVersion(ref path, properties);
+            if (properties.desugarLibVersion.StartsWith("1"))
+                ModifyEosSdkAarDesugarVersion(ref path, properties);
         }
 
         private void AddClientID(ref string path)
         {
-#region setting strings
+            #region setting strings
             string clientid = PlayerPrefs.GetString("EOSTransport Client ID");
             if (string.IsNullOrWhiteSpace(clientid)) throw new BuildFailedException("No Client ID is set to be added to the strings.xml build file, so the build cannot continue. Please enter playmode, let EOS log in successfully, then try building again.");
 
@@ -123,7 +141,7 @@ namespace EpicTransport.Editor
 
             res.AppendChild(@new);
             xml.Save(stringspath);
-#endregion
+            #endregion
         }
 
         private void AddCoreLibraryDesugaringToUnityApps(ref string path, GradlePropertiesData properties)
@@ -154,7 +172,7 @@ namespace EpicTransport.Editor
         {
             string result = content;
 
-#region Dependencies
+            #region Dependencies
             if (!content.Contains("coreLibraryDesugaring"))
             {
                 int dependenciesIndex = content.IndexOf("dependencies");
@@ -172,9 +190,9 @@ namespace EpicTransport.Editor
                     Debug.LogWarning("Could not find dependencies block in build.gradle");
                 }
             }
-#endregion
+            #endregion
 
-#region Compile Options
+            #region Compile Options
             if (content.Contains("compileOptions"))
             {
                 int compileOptionsIndex = result.IndexOf("compileOptions");
@@ -203,7 +221,7 @@ namespace EpicTransport.Editor
                     }
                 }
             }
-#endregion
+            #endregion
 
             return result;
         }
@@ -224,15 +242,17 @@ namespace EpicTransport.Editor
                 .Replace("**JAVAVERSION**", properties.javaCompatibilityVersion)
                 .Replace("**DESUGARVERSION**", properties.desugarLibVersion);
 
-            File.WriteAllText(gradlePath, processedContent);
+            if (properties.agpMajor >= 8)
+                processedContent = processedContent.Replace("//namespace 'com.codedimmersions.eostransport.eos_dependencies'", "namespace 'com.codedimmersions.eostransport.eos_dependencies'");
 
+            File.WriteAllText(gradlePath, processedContent);
         }
 
         private void AddAndroidX(ref string path)
         {
             string gradlePropertiesPath = Path.Combine(Directory.GetParent(path).FullName, "gradle.properties");
             if (!File.Exists(gradlePropertiesPath)) return;
-            
+
             string lines = File.ReadAllText(gradlePropertiesPath);
             if (lines.Length > 0)
             {
@@ -312,7 +332,7 @@ namespace EpicTransport.Editor
 
         private (string, int) GetCurrentJDKVersion()
         {
-            string jdkReleaseFilePath = Path.Combine(AndroidExternalToolsSettings.jdkRootPath, "release");
+            string jdkReleaseFilePath = Path.Combine(UnityEditor.Android.AndroidExternalToolsSettings.jdkRootPath, "release");
             if (!File.Exists(jdkReleaseFilePath))
             {
                 Debug.LogWarning($"Could not find JDK release file at '{jdkReleaseFilePath}'.");
@@ -365,7 +385,7 @@ namespace EpicTransport.Editor
 
             return properties;
 
-#region Extra Methods
+            #region Extra Methods
 #if UNITY_6000_0_OR_NEWER
             string GetPropertyValue(string line) => line.Split('=')[1].Trim();
 
@@ -511,7 +531,7 @@ namespace EpicTransport.Editor
                     return "1.1.9";
                 }
             }
-#endregion
+            #endregion
         }
 
         private struct GradlePropertiesData
@@ -555,7 +575,8 @@ namespace EpicTransport.Editor
     }
 }
 ";
+
 #endif
-#endregion
+        #endregion
     }
 }

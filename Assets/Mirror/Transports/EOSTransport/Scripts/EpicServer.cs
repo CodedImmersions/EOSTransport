@@ -90,7 +90,7 @@ namespace EpicTransport
                 SocketId = s
             };
 
-            p2p.CloseConnection(ref closeopt);
+            P2P.CloseConnection(ref closeopt);
 
             deadsockets.Add(s);
 
@@ -110,7 +110,7 @@ namespace EpicTransport
                 SendInternalData(conn.ProductUserID, conn.SocketID.Value, InternalMessages.DISCONNECT, new byte[] { EOSTransport.DRHeader, (byte)DisconnectReason.SERVER_CLOSE });
 
                 CloseConnectionOptions closeopt = new CloseConnectionOptions() { LocalUserId = MyPUID, RemoteUserId = conn.ProductUserID, SocketId = conn.SocketID };
-                p2p.CloseConnection(ref closeopt);
+                P2P.CloseConnection(ref closeopt);
             }
 
             DisposeThis();
@@ -152,7 +152,7 @@ namespace EpicTransport
                 SocketId = cb.SocketId
             };
 
-            Result res2 = p2p.AcceptConnection(ref acceptopt);
+            Result res2 = P2P.AcceptConnection(ref acceptopt);
             if (res2 != Result.Success) throw new EOSSDKException(res2, $"Failed to accept client P2P connection! (Client: {cb.RemoteUserId})");
             TransportLogger.Log($"accepted connection {cb.RemoteUserId}.");
         }
@@ -238,7 +238,7 @@ namespace EpicTransport
                         SocketId = socket
                     };
 
-                    p2p.CloseConnection(ref closeopt);
+                    P2P.CloseConnection(ref closeopt);
 
                     deadsockets.Add(socket);
 
